@@ -23,6 +23,7 @@ import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.mockwebserver.MockResponse;
 import com.squareup.okhttp.mockwebserver.MockWebServer;
+import com.squareup.okhttp.mockwebserver.PushPromise;
 import com.squareup.okhttp.mockwebserver.RecordedRequest;
 import com.squareup.okhttp.mockwebserver.SocketPolicy;
 import java.io.ByteArrayOutputStream;
@@ -76,11 +77,11 @@ public abstract class HttpOverSpdyTest {
   };
 
   private static final SSLContext sslContext = SslContextBuilder.localhost();
-  protected final MockWebServer server = new MockWebServer();
-  protected final String hostName = server.getHostName();
-  protected final OkHttpClient client = new OkHttpClient();
-  protected HttpURLConnection connection;
-  protected HttpResponseCache cache;
+  private final MockWebServer server = new MockWebServer();
+  private final String hostName = server.getHostName();
+  private final OkHttpClient client = new OkHttpClient();
+  private HttpURLConnection connection;
+  private HttpResponseCache cache;
 
   @Before public void setUp() throws Exception {
     server.useHttps(sslContext.getSocketFactory(), false);
@@ -374,11 +375,11 @@ public abstract class HttpOverSpdyTest {
     assertContains(requestB.getHeaders(), "cookie: c=oreo");
   }
 
-  <T> void assertContains(Collection<T> collection, T value) {
+  private <T> void assertContains(Collection<T> collection, T value) {
     assertTrue(collection.toString(), collection.contains(value));
   }
 
-  void assertContent(String expected, HttpURLConnection connection, int limit)
+  private void assertContent(String expected, HttpURLConnection connection, int limit)
       throws IOException {
     connection.connect();
     assertEquals(expected, readAscii(connection.getInputStream(), limit));
@@ -413,7 +414,7 @@ public abstract class HttpOverSpdyTest {
     return bytesOut.toByteArray();
   }
 
-  class SpdyRequest implements Runnable {
+  private class SpdyRequest implements Runnable {
     String path;
     CountDownLatch countDownLatch;
     public SpdyRequest(String path, CountDownLatch countDownLatch) {
@@ -430,5 +431,49 @@ public abstract class HttpOverSpdyTest {
         throw new RuntimeException(e);
       }
     }
+  }
+
+  @Test public void serverSendsPushPromise_GET() throws Exception {
+    MockResponse response = new MockResponse().setBody("ABCDE").setStatus("HTTP/1.1 200 Sweet")
+        .withPush(new PushPromise("GET", "/foo/bar", Arrays.asList("foo: bar"),
+            new MockResponse().setBody("bar").setStatus("HTTP/1.1 200 Sweet")));
+    server.enqueue(response);
+    server.play();
+
+    connection = client.open(server.getUrl("/foo"));
+    assertContent("ABCDE", connection, Integer.MAX_VALUE);
+    assertEquals(200, connection.getResponseCode());
+    assertEquals("Sweet", connection.getResponseMessage());
+
+    RecordedRequest request = server.takeRequest();
+    assertEquals("GET /foo HTTP/1.1", request.getRequestLine());
+    assertContains(request.getHeaders(), ":scheme: https");
+    assertContains(request.getHeaders(), hostHeader + ": " + hostName + ":" + server.getPort());
+
+    RecordedRequest pushedRequest = server.takeRequest();
+    assertEquals("GET /foo/bar HTTP/1.1", pushedRequest.getRequestLine());
+    assertEquals(Arrays.asList("foo: bar"), pushedRequest.getHeaders());
+  }
+
+  @Test public void serverSendsPushPromise_HEAD() throws Exception {
+    MockResponse response = new MockResponse().setBody("ABCDE").setStatus("HTTP/1.1 200 Sweet")
+        .withPush(new PushPromise("HEAD", "/foo/bar", Arrays.asList("foo: bar"),
+            new MockResponse().setStatus("HTTP/1.1 204 Sweet")));
+    server.enqueue(response);
+    server.play();
+
+    connection = client.open(server.getUrl("/foo"));
+    assertContent("ABCDE", connection, Integer.MAX_VALUE);
+    assertEquals(200, connection.getResponseCode());
+    assertEquals("Sweet", connection.getResponseMessage());
+
+    RecordedRequest request = server.takeRequest();
+    assertEquals("GET /foo HTTP/1.1", request.getRequestLine());
+    assertContains(request.getHeaders(), ":scheme: https");
+    assertContains(request.getHeaders(), hostHeader + ": " + hostName + ":" + server.getPort());
+
+    RecordedRequest pushedRequest = server.takeRequest();
+    assertEquals("HEAD /foo/bar HTTP/1.1", pushedRequest.getRequestLine());
+    assertEquals(Arrays.asList("foo: bar"), pushedRequest.getHeaders());
   }
 }
